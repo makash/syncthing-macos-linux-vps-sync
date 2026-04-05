@@ -1,6 +1,14 @@
-# Syncthing pair sync: macOS laptop ↔ Linux VPS
+# Syncthing macOS ↔ Linux VPS sync guide
 
-A practical, agent-friendly guide for setting up **bidirectional file sync** between a macOS laptop and one or more Linux VPS servers using [Syncthing](https://syncthing.net/).
+[![GitHub Repo](https://img.shields.io/badge/GitHub-makash%2Fsyncthing--macos--linux--vps--sync-181717?logo=github)](https://github.com/makash/syncthing-macos-linux-vps-sync)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![macOS](https://img.shields.io/badge/macOS-supported-000000?logo=apple)
+![Linux](https://img.shields.io/badge/Linux-supported-FCC624?logo=linux&logoColor=black)
+![Syncthing](https://img.shields.io/badge/Syncthing-pair--only%20topology-0891b2)
+
+Practical guide and automation scripts for setting up **bidirectional Syncthing file sync between a macOS laptop and one or more Linux VPS servers over SSH** — with a safe **pair-only topology** that helps you avoid accidental full-mesh sync.
+
+![Pair-only Syncthing topology for macOS and Linux VPS](assets/syncthing-pair-topology.svg)
 
 This repo is intentionally written so a coding agent can:
 
@@ -26,6 +34,16 @@ this repo gives you:
 - and a one-shot setup script you run from the Mac.
 
 ---
+
+## Visual topology
+
+The recommended setup is a **hub-and-pairs** model:
+
+- `macOS laptop ⇄ Linux VPS A`
+- `macOS laptop ⇄ Linux VPS B`
+- **not** `Linux VPS A ⇄ Linux VPS B`
+
+That gives you safe, isolated sync paths for each server.
 
 ## Recommended topology
 
@@ -372,3 +390,9 @@ If you explicitly want all devices to receive everything, then you can reuse the
 Just do that intentionally.
 
 For most laptop + VPS workflows, pair-only sync is the safer default.
+
+---
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="360" viewBox="0 0 980 360" role="img" aria-labelledby="title desc">
+  <title id="title">Syncthing pair-only topology</title>
+  <desc id="desc">A macOS laptop in the center syncs separately with Linux VPS A and Linux VPS B, while the servers do not sync directly with each other.</desc>
+  <defs>
+    <style>
+      .bg { fill: #0f172a; }
+      .panel { fill: #111827; stroke: #334155; stroke-width: 2; rx: 18; }
+      .laptop { fill: #1d4ed8; }
+      .server { fill: #0f766e; }
+      .text { fill: #e5e7eb; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      .title { font-size: 28px; font-weight: 700; }
+      .label { font-size: 22px; font-weight: 700; }
+      .sub { font-size: 16px; fill: #cbd5e1; }
+      .good { stroke: #22c55e; stroke-width: 8; fill: none; marker-end: url(#arrowGreen); marker-start: url(#arrowGreen); }
+      .bad { stroke: #ef4444; stroke-width: 6; stroke-dasharray: 14 10; fill: none; marker-end: url(#arrowRed); marker-start: url(#arrowRed); }
+      .note { font-size: 15px; fill: #94a3b8; }
+    </style>
+    <marker id="arrowGreen" markerWidth="12" markerHeight="12" refX="6" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#22c55e" />
+    </marker>
+    <marker id="arrowRed" markerWidth="12" markerHeight="12" refX="6" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#ef4444" />
+    </marker>
+  </defs>
+
+  <rect class="bg" width="980" height="360" rx="20" />
+  <text x="490" y="42" text-anchor="middle" class="text title">Recommended Syncthing Pair-Only Topology</text>
+
+  <rect x="70" y="110" width="230" height="120" class="panel server" rx="18" />
+  <text x="185" y="155" text-anchor="middle" class="text label">Linux VPS A</text>
+  <text x="185" y="185" text-anchor="middle" class="text sub">/home/user/shares/server-a</text>
+  <text x="185" y="208" text-anchor="middle" class="text note">folder ID: server-a-connect</text>
+
+  <rect x="375" y="95" width="230" height="150" class="panel laptop" rx="18" />
+  <text x="490" y="145" text-anchor="middle" class="text label">macOS Laptop</text>
+  <text x="490" y="175" text-anchor="middle" class="text sub">~/shares/server-a</text>
+  <text x="490" y="198" text-anchor="middle" class="text sub">~/shares/server-b</text>
+  <text x="490" y="221" text-anchor="middle" class="text note">One folder ID per server pair</text>
+
+  <rect x="680" y="110" width="230" height="120" class="panel server" rx="18" />
+  <text x="795" y="155" text-anchor="middle" class="text label">Linux VPS B</text>
+  <text x="795" y="185" text-anchor="middle" class="text sub">/home/user/shares/server-b</text>
+  <text x="795" y="208" text-anchor="middle" class="text note">folder ID: server-b-connect</text>
+
+  <path d="M300 170 C335 170, 340 170, 375 170" class="good" />
+  <path d="M605 170 C640 170, 645 170, 680 170" class="good" />
+  <path d="M300 255 C420 330, 560 330, 680 255" class="bad" />
+
+  <text x="490" y="305" text-anchor="middle" class="text sub">Do not reuse the same folder ID across multiple servers unless you want a full mesh.</text>
+  <text x="490" y="330" text-anchor="middle" class="text note">Good: laptop ⇄ server-a and laptop ⇄ server-b • Avoid: server-a ⇄ server-b propagation</text>
+</svg>
