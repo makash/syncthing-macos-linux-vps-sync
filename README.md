@@ -13,7 +13,7 @@ It supports both:
 - **one pair per server**
 - **multiple pairs per server user**
 
-That second mode is useful when you SSH into a server as one user, but want separate synced folders for other users like `ralph` or `apscralph`.
+That second mode is useful when you SSH into a server as one admin or bootstrap user, but want separate synced folders owned by application users such as `appuser`, `deploy`, or `analyst`.
 
 ![Pair-only Syncthing topology for macOS and Linux VPS](assets/syncthing-pair-topology.svg)
 
@@ -98,18 +98,18 @@ Example with one user per server:
 
 Example with multiple users on the same server:
 
-- `ccrem-amapsc`
-  - laptop: `~/shares/ccrem/amapsc`
-  - server: `/home/amapsc/shares/laptop`
-- `ccrem-ralph`
-  - laptop: `~/shares/ccrem/ralph`
-  - server: `/home/ralph/shares/laptop`
-- `amccrem-ralph`
-  - laptop: `~/shares/amccrem/ralph`
-  - server: `/home/ralph/shares/laptop`
-- `amccrem-apscralph`
-  - laptop: `~/shares/amccrem/apscralph`
-  - server: `/home/apscralph/shares/laptop`
+- `server-a-appuser`
+  - laptop: `~/shares/server-a/appuser`
+  - server: `/home/appuser/shares/laptop`
+- `server-a-deploy`
+  - laptop: `~/shares/server-a/deploy`
+  - server: `/home/deploy/shares/laptop`
+- `server-b-deploy`
+  - laptop: `~/shares/server-b/deploy`
+  - server: `/home/deploy/shares/laptop`
+- `server-b-analyst`
+  - laptop: `~/shares/server-b/analyst`
+  - server: `/home/analyst/shares/laptop`
 
 This gives you:
 
@@ -195,24 +195,26 @@ If you SSH in as one user but want the synced folder to belong to another user, 
 
 ```bash
 ./scripts/setup-mac-linux-pair.sh \
-  --ssh-config ~/Documents/creds/config_ssh \
-  --ssh-host ccrem \
-  --remote-user ralph \
-  --folder-id ccrem-ralph \
-  --label ccrem/ralph \
-  --local-path ~/shares/ccrem/ralph
+  --ssh-config ~/.ssh/config \
+  --ssh-host server-a \
+  --remote-user deploy \
+  --folder-id server-a-deploy \
+  --label server-a/deploy \
+  --local-path ~/shares/server-a/deploy
 ```
 
-When `--remote-user` is set and `--remote-path` is omitted, the default remote path is:
+When `--remote-path` is omitted, the default remote path is:
 
 ```text
-~<remote-user>/shares/laptop
+~<target-user>/shares/laptop
 ```
+
+The target user is `--remote-user` when provided, otherwise the SSH login user.
 
 So the example above syncs to:
 
 ```text
-/home/ralph/shares/laptop
+/home/deploy/shares/laptop
 ```
 
 That’s it.
@@ -229,17 +231,40 @@ That’s it.
 4. decides which remote user should own the sync:
    - login user by default
    - or `--remote-user <user>` if provided
-5. starts Syncthing for that remote user:
+5. normalizes per-user Syncthing ports so multiple Linux users can run on the same host
+6. starts Syncthing for that remote user:
    - existing SSH login user via `systemctl --user`
    - other users via `syncthing@<user>.service`
-6. creates the local and remote sync folders
-7. reads the device IDs for the Mac and the remote target user
-8. adds each device to the other device list
-9. creates a pair-only folder config on both sides
-10. installs safe `.stignore` rules on both endpoints
-11. refuses to continue if the requested folder already contains unexpected third-party devices
+7. creates the local and remote sync folders
+8. reads the device IDs for the Mac and the remote target user
+9. adds each device to the other device list
+10. creates a pair-only folder config on both sides
+11. installs safe `.stignore` rules on both endpoints
+12. refuses to continue if the requested folder already contains unexpected third-party devices
 
 That last safety check is important: it prevents accidentally turning a pair into a mesh.
+
+---
+
+## Multi-user VPS tips
+
+When you run Syncthing for multiple Linux users on the same server, each user is a separate Syncthing device with its own config, certificate, folders, and ports.
+
+Practical rules:
+
+- Use **one Syncthing instance per Linux user** when folder ownership matters.
+- Use `syncthing@<user>.service` for users you are not logged in as.
+- Give every `host + user` pair its own folder ID, label, and local path.
+- Keep the server GUI bound to `127.0.0.1`; use SSH port forwarding if you need to inspect it.
+- If discovery is slow or unreliable, add an explicit remote device address such as `tcp://server.example.com:22000` in Syncthing.
+
+The setup script derives per-user ports from the Linux UID to avoid the usual multi-user conflicts:
+
+- sync listen port: `22000 + (uid % 1000)`
+- GUI port: `8384 + (uid % 1000)`
+- local discovery port: `24000 + (uid % 1000)`
+
+If those ports collide with an existing service on your server, adjust that user's Syncthing config before starting the service.
 
 ---
 
@@ -314,20 +339,20 @@ ssh <alias> 'sudo -n -u <user> env HOME=/home/<user> XDG_CONFIG_HOME=/home/<user
 Create a file on the Mac:
 
 ```bash
-echo "hello from mac" > ~/shares/ccrem/ralph/test-from-mac.txt
+echo "hello from mac" > ~/shares/server-a/appuser/test-from-mac.txt
 ```
 
 Check on the server:
 
 ```bash
-ssh ccrem 'sudo -n -u ralph ls -la /home/ralph/shares/laptop/test-from-mac.txt'
+ssh server-a 'sudo -n -u appuser ls -la /home/appuser/shares/laptop/test-from-mac.txt'
 ```
 
 Then do the reverse:
 
 ```bash
-ssh ccrem 'sudo -n -u ralph sh -c "echo hello-from-server > /home/ralph/shares/laptop/test-from-server.txt"'
-ls -la ~/shares/ccrem/ralph/test-from-server.txt
+ssh server-a 'sudo -n -u appuser sh -c "echo hello-from-server > /home/appuser/shares/laptop/test-from-server.txt"'
+ls -la ~/shares/server-a/appuser/test-from-server.txt
 ```
 
 ---
@@ -420,17 +445,17 @@ This preserves isolation.
 
 Use one pair per `host/user` combination:
 
-- `ccrem-amapsc` → `~/shares/ccrem/amapsc`
-- `ccrem-ralph` → `~/shares/ccrem/ralph`
-- `amccrem-ralph` → `~/shares/amccrem/ralph`
-- `amccrem-apscralph` → `~/shares/amccrem/apscralph`
+- `server-a-appuser` → `~/shares/server-a/appuser`
+- `server-a-deploy` → `~/shares/server-a/deploy`
+- `server-b-deploy` → `~/shares/server-b/deploy`
+- `server-b-analyst` → `~/shares/server-b/analyst`
 
 Default remote paths with `--remote-user`:
 
-- `ccrem / amapsc` → `/home/amapsc/shares/laptop`
-- `ccrem / ralph` → `/home/ralph/shares/laptop`
-- `amccrem / ralph` → `/home/ralph/shares/laptop`
-- `amccrem / apscralph` → `/home/apscralph/shares/laptop`
+- `server-a / appuser` → `/home/appuser/shares/laptop`
+- `server-a / deploy` → `/home/deploy/shares/laptop`
+- `server-b / deploy` → `/home/deploy/shares/laptop`
+- `server-b / analyst` → `/home/analyst/shares/laptop`
 
 ---
 
@@ -438,36 +463,36 @@ Default remote paths with `--remote-user`:
 
 ```bash
 ./scripts/setup-mac-linux-pair.sh \
-  --ssh-config ~/Documents/creds/config_ssh \
-  --ssh-host ccrem \
-  --remote-user amapsc \
-  --folder-id ccrem-amapsc \
-  --label ccrem/amapsc \
-  --local-path ~/shares/ccrem/amapsc
+  --ssh-config ~/.ssh/config \
+  --ssh-host server-a \
+  --remote-user appuser \
+  --folder-id server-a-appuser \
+  --label server-a/appuser \
+  --local-path ~/shares/server-a/appuser
 
 ./scripts/setup-mac-linux-pair.sh \
-  --ssh-config ~/Documents/creds/config_ssh \
-  --ssh-host ccrem \
-  --remote-user ralph \
-  --folder-id ccrem-ralph \
-  --label ccrem/ralph \
-  --local-path ~/shares/ccrem/ralph
+  --ssh-config ~/.ssh/config \
+  --ssh-host server-a \
+  --remote-user deploy \
+  --folder-id server-a-deploy \
+  --label server-a/deploy \
+  --local-path ~/shares/server-a/deploy
 
 ./scripts/setup-mac-linux-pair.sh \
-  --ssh-config ~/Documents/creds/config_ssh \
-  --ssh-host amccrem \
-  --remote-user ralph \
-  --folder-id amccrem-ralph \
-  --label amccrem/ralph \
-  --local-path ~/shares/amccrem/ralph
+  --ssh-config ~/.ssh/config \
+  --ssh-host server-b \
+  --remote-user deploy \
+  --folder-id server-b-deploy \
+  --label server-b/deploy \
+  --local-path ~/shares/server-b/deploy
 
 ./scripts/setup-mac-linux-pair.sh \
-  --ssh-config ~/Documents/creds/config_ssh \
-  --ssh-host amccrem \
-  --remote-user apscralph \
-  --folder-id amccrem-apscralph \
-  --label amccrem/apscralph \
-  --local-path ~/shares/amccrem/apscralph
+  --ssh-config ~/.ssh/config \
+  --ssh-host server-b \
+  --remote-user analyst \
+  --folder-id server-b-analyst \
+  --label server-b/analyst \
+  --local-path ~/shares/server-b/analyst
 ```
 
 ---

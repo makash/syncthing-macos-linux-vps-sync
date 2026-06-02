@@ -19,27 +19,27 @@ Optional arguments:
   --ssh-config <path>        Alternate SSH config file
   --remote-user <user>       Remote Linux user to run Syncthing as
   --remote-path <path>       Remote Linux folder path (absolute)
-                             Defaults to ~<remote-user>/shares/laptop when --remote-user is set
+                             Defaults to ~<target-user>/shares/laptop when omitted
   --remote-name <name>       Friendly device name for remote
   --no-stignore              Skip writing safe default .stignore files
   -h, --help                 Show help
 
 Examples:
   ./scripts/setup-mac-linux-pair.sh \
-    --ssh-config ~/Documents/creds/config_ssh \
-    --ssh-host ccrem \
-    --remote-user ralph \
-    --folder-id ccrem-ralph \
-    --label ccrem/ralph \
-    --local-path ~/shares/ccrem/ralph
+    --ssh-config ~/.ssh/config \
+    --ssh-host server-a \
+    --remote-user appuser \
+    --folder-id server-a-appuser \
+    --label server-a/appuser \
+    --local-path ~/shares/server-a/appuser
 
   ./scripts/setup-mac-linux-pair.sh \
-    --ssh-config ~/Documents/creds/config_ssh \
-    --ssh-host amccrem \
-    --remote-user apscralph \
-    --folder-id amccrem-apscralph \
-    --label amccrem/apscralph \
-    --local-path ~/shares/amccrem/apscralph
+    --ssh-config ~/.ssh/config \
+    --ssh-host server-b \
+    --remote-user deploy \
+    --folder-id server-b-deploy \
+    --label server-b/deploy \
+    --local-path ~/shares/server-b/deploy
 EOF
 }
 
@@ -361,8 +361,8 @@ manage_syncthing_service() {
     systemctl_target_user enable syncthing.service >/dev/null 2>&1 || true
     systemctl_target_user restart syncthing.service >/dev/null 2>&1 || systemctl_target_user start syncthing.service >/dev/null
   else
-    sudo systemctl enable "syncthing@$TARGET_USER.service" >/dev/null 2>&1 || true
-    sudo systemctl restart "syncthing@$TARGET_USER.service" >/dev/null 2>&1 || sudo systemctl start "syncthing@$TARGET_USER.service" >/dev/null
+    sudo -n systemctl enable "syncthing@$TARGET_USER.service" >/dev/null 2>&1 || true
+    sudo -n systemctl restart "syncthing@$TARGET_USER.service" >/dev/null 2>&1 || sudo -n systemctl start "syncthing@$TARGET_USER.service" >/dev/null
   fi
 }
 
@@ -373,14 +373,32 @@ import xml.etree.ElementTree as ET
 
 config_path = sys.argv[1]
 uid = int(sys.argv[2])
-local_announce_port = 21027 + uid
+port_offset = uid % 1000
+listen_port = 22000 + port_offset
+gui_port = 8384 + port_offset
+local_announce_port = 24000 + port_offset
 
 tree = ET.parse(config_path)
 root = tree.getroot()
 
+gui = root.find("gui")
+if gui is None:
+    gui = ET.SubElement(root, "gui", {"enabled": "true", "tls": "false", "debugging": "false"})
+
+address = gui.find("address")
+if address is None:
+    address = ET.SubElement(gui, "address")
+address.text = f"127.0.0.1:{gui_port}"
+
 options = root.find("options")
 if options is None:
     raise SystemExit("Syncthing config is missing <options>")
+
+for node in list(options.findall("listenAddress")):
+    options.remove(node)
+for value in (f"tcp://:{listen_port}", f"quic://:{listen_port}"):
+    node = ET.SubElement(options, "listenAddress")
+    node.text = value
 
 port_node = options.find("localAnnouncePort")
 if port_node is None:
