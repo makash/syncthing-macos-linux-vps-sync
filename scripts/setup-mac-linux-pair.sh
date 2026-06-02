@@ -5,7 +5,7 @@ SAFE_STIGNORE_CONTENT=$'.DS_Store\n._*\nThumbs.db\nehthumbs.db\n*.swp\n*.swo\n*~
 
 usage() {
   cat <<'EOF'
-Create a Syncthing pair between a macOS laptop and one Linux server.
+Create a Syncthing pair between a macOS laptop and one Linux server user.
 
 Run this script from macOS.
 
@@ -14,22 +14,32 @@ Required arguments:
   --folder-id <id>           Syncthing folder ID, unique per pair
   --label <label>            Human label for the folder
   --local-path <path>        Local macOS folder path
-  --remote-path <path>       Remote Linux folder path (absolute)
 
 Optional arguments:
   --ssh-config <path>        Alternate SSH config file
-  --remote-name <name>       Friendly device name for remote (defaults to ssh host)
+  --remote-user <user>       Remote Linux user to run Syncthing as
+  --remote-path <path>       Remote Linux folder path (absolute)
+                             Defaults to ~<remote-user>/shares/laptop when --remote-user is set
+  --remote-name <name>       Friendly device name for remote
   --no-stignore              Skip writing safe default .stignore files
   -h, --help                 Show help
 
-Example:
+Examples:
   ./scripts/setup-mac-linux-pair.sh \
-    --ssh-config ~/.ssh/config \
-    --ssh-host server-a \
-    --folder-id server-a-connect \
-    --label server-a-connect \
-    --local-path ~/shares/server-a \
-    --remote-path /home/user/shares/server-a
+    --ssh-config ~/Documents/creds/config_ssh \
+    --ssh-host ccrem \
+    --remote-user ralph \
+    --folder-id ccrem-ralph \
+    --label ccrem/ralph \
+    --local-path ~/shares/ccrem/ralph
+
+  ./scripts/setup-mac-linux-pair.sh \
+    --ssh-config ~/Documents/creds/config_ssh \
+    --ssh-host amccrem \
+    --remote-user apscralph \
+    --folder-id amccrem-apscralph \
+    --label amccrem/apscralph \
+    --local-path ~/shares/amccrem/apscralph
 EOF
 }
 
@@ -132,12 +142,17 @@ extract_folder_devices() {
   python3 -c 'import json, sys; [print(dev["deviceID"]) for dev in json.load(sys.stdin)["devices"]]'
 }
 
+extract_my_id() {
+  python3 -c 'import json, sys; print(json.load(sys.stdin)["myID"])'
+}
+
 SSH_HOST=""
 SSH_CONFIG=""
 FOLDER_ID=""
 LABEL=""
 LOCAL_PATH=""
 REMOTE_PATH=""
+REMOTE_USER=""
 REMOTE_NAME=""
 WRITE_STIGNORE=1
 
@@ -167,6 +182,10 @@ while [[ $# -gt 0 ]]; do
       REMOTE_PATH="$2"
       shift 2
       ;;
+    --remote-user)
+      REMOTE_USER="$2"
+      shift 2
+      ;;
     --remote-name)
       REMOTE_NAME="$2"
       shift 2
@@ -189,11 +208,9 @@ done
 [[ -n "$FOLDER_ID" ]] || die "--folder-id is required"
 [[ -n "$LABEL" ]] || die "--label is required"
 [[ -n "$LOCAL_PATH" ]] || die "--local-path is required"
-[[ -n "$REMOTE_PATH" ]] || die "--remote-path is required"
-[[ "$REMOTE_PATH" = /* ]] || die "--remote-path must be absolute"
 
-if [[ -z "$REMOTE_NAME" ]]; then
-  REMOTE_NAME="$SSH_HOST"
+if [[ -n "$REMOTE_PATH" && "$REMOTE_PATH" != /* ]]; then
+  die "--remote-path must be absolute"
 fi
 
 need_cmd ssh
@@ -239,9 +256,10 @@ echo "==> Checking SSH connectivity to $SSH_HOST"
 remote_cmd hostname >/dev/null
 
 echo "==> Installing/starting Syncthing on remote if needed"
-remote_bash "$REMOTE_PATH" <<'REMOTE'
+REMOTE_BOOTSTRAP_OUTPUT="$(remote_bash "$REMOTE_USER" "$REMOTE_PATH" <<'REMOTE_BOOTSTRAP'
 set -euo pipefail
-REMOTE_PATH="$1"
+TARGET_USER_INPUT="$1"
+REMOTE_PATH_INPUT="$2"
 
 install_syncthing() {
   if command -v syncthing >/dev/null 2>&1; then
@@ -278,35 +296,153 @@ install_syncthing() {
   exit 1
 }
 
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "Missing required command on remote host: $1" >&2
+    exit 1
+  }
+}
+
+need_cmd python3
+need_cmd systemctl
+need_cmd loginctl
 install_syncthing
-systemctl --user daemon-reload || true
-systemctl --user enable --now syncthing.service
-sudo loginctl enable-linger "$USER"
-mkdir -p "$REMOTE_PATH"
-REMOTE
 
-if "$LOCAL_ST_BIN" --home "$LOCAL_ST_HOME" device-id >/dev/null 2>&1; then
-  LOCAL_DEVICE_ID="$($LOCAL_ST_BIN --home "$LOCAL_ST_HOME" device-id)"
+if [[ -n "$TARGET_USER_INPUT" ]]; then
+  TARGET_USER="$TARGET_USER_INPUT"
 else
-  LOCAL_DEVICE_ID="$($LOCAL_ST_BIN --home "$LOCAL_ST_HOME" --device-id)"
+  TARGET_USER="$USER"
 fi
 
-REMOTE_DEVICE_ID="$(remote_bash <<'REMOTE'
-set -euo pipefail
-if syncthing device-id >/dev/null 2>&1; then
-  syncthing device-id
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+[[ -n "$TARGET_HOME" ]] || {
+  echo "Remote user not found: $TARGET_USER" >&2
+  exit 1
+}
+
+TARGET_UID="$(id -u "$TARGET_USER")"
+TARGET_RUNTIME_DIR="/run/user/$TARGET_UID"
+TARGET_ST_HOME="$TARGET_HOME/.config/syncthing"
+
+if [[ -n "$REMOTE_PATH_INPUT" ]]; then
+  REMOTE_PATH="$REMOTE_PATH_INPUT"
 else
-  syncthing --device-id
+  REMOTE_PATH="$TARGET_HOME/shares/laptop"
 fi
-REMOTE
+
+run_as_target() {
+  sudo -n -u "$TARGET_USER" env \
+    HOME="$TARGET_HOME" \
+    XDG_CONFIG_HOME="$TARGET_HOME/.config" \
+    "$@"
+}
+
+systemctl_target_user() {
+  sudo -n -u "$TARGET_USER" env \
+    HOME="$TARGET_HOME" \
+    XDG_RUNTIME_DIR="$TARGET_RUNTIME_DIR" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$TARGET_RUNTIME_DIR/bus" \
+    systemctl --user "$@"
+}
+
+manage_syncthing_service() {
+  if [[ "$TARGET_USER" == "$USER" ]]; then
+    sudo -n loginctl enable-linger "$TARGET_USER"
+    sudo -n loginctl start-user "$TARGET_USER" >/dev/null 2>&1 || true
+    for _ in $(seq 1 20); do
+      [[ -S "$TARGET_RUNTIME_DIR/bus" ]] && break
+      sleep 1
+    done
+    [[ -S "$TARGET_RUNTIME_DIR/bus" ]] || {
+      echo "Timed out waiting for systemd user bus for $TARGET_USER" >&2
+      exit 1
+    }
+    systemctl_target_user daemon-reload >/dev/null 2>&1 || true
+    systemctl_target_user enable syncthing.service >/dev/null 2>&1 || true
+    systemctl_target_user restart syncthing.service >/dev/null 2>&1 || systemctl_target_user start syncthing.service >/dev/null
+  else
+    sudo systemctl enable "syncthing@$TARGET_USER.service" >/dev/null 2>&1 || true
+    sudo systemctl restart "syncthing@$TARGET_USER.service" >/dev/null 2>&1 || sudo systemctl start "syncthing@$TARGET_USER.service" >/dev/null
+  fi
+}
+
+normalize_config() {
+  run_as_target python3 - "$1" "$2" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+config_path = sys.argv[1]
+uid = int(sys.argv[2])
+local_announce_port = 21027 + uid
+
+tree = ET.parse(config_path)
+root = tree.getroot()
+
+options = root.find("options")
+if options is None:
+    raise SystemExit("Syncthing config is missing <options>")
+
+port_node = options.find("localAnnouncePort")
+if port_node is None:
+    port_node = ET.SubElement(options, "localAnnouncePort")
+port_node.text = str(local_announce_port)
+
+start_browser = options.find("startBrowser")
+if start_browser is None:
+    start_browser = ET.SubElement(options, "startBrowser")
+start_browser.text = "false"
+
+tree.write(config_path, encoding="utf-8", xml_declaration=False)
+PY
+}
+
+if [[ ! -f "$TARGET_ST_HOME/config.xml" ]]; then
+  run_as_target mkdir -p "$TARGET_ST_HOME"
+  run_as_target syncthing generate --home "$TARGET_ST_HOME" --no-default-folder >/dev/null
+fi
+
+normalize_config "$TARGET_ST_HOME/config.xml" "$TARGET_UID"
+run_as_target mkdir -p "$REMOTE_PATH"
+manage_syncthing_service
+
+for _ in $(seq 1 30); do
+  if run_as_target syncthing cli --home "$TARGET_ST_HOME" show system >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+REMOTE_DEVICE_ID="$(run_as_target syncthing cli --home "$TARGET_ST_HOME" show system | python3 -c 'import json, sys; print(json.load(sys.stdin)["myID"])')"
+
+printf '__PI__TARGET_USER=%s\n' "$TARGET_USER"
+printf '__PI__TARGET_HOME=%s\n' "$TARGET_HOME"
+printf '__PI__REMOTE_PATH=%s\n' "$REMOTE_PATH"
+printf '__PI__REMOTE_DEVICE_ID=%s\n' "$REMOTE_DEVICE_ID"
+REMOTE_BOOTSTRAP
 )"
-REMOTE_DEVICE_ID="${REMOTE_DEVICE_ID//$'\r'/}"
 
-[[ -n "$LOCAL_DEVICE_ID" ]] || die "Failed to determine local device ID"
+REMOTE_ACTUAL_USER="$(printf '%s\n' "$REMOTE_BOOTSTRAP_OUTPUT" | awk -F= '/^__PI__TARGET_USER=/{print substr($0, index($0,$2))}' | tail -1)"
+REMOTE_PATH="$(printf '%s\n' "$REMOTE_BOOTSTRAP_OUTPUT" | awk -F= '/^__PI__REMOTE_PATH=/{print substr($0, index($0,$2))}' | tail -1)"
+REMOTE_DEVICE_ID="$(printf '%s\n' "$REMOTE_BOOTSTRAP_OUTPUT" | awk -F= '/^__PI__REMOTE_DEVICE_ID=/{print substr($0, index($0,$2))}' | tail -1)"
+
+[[ -n "$REMOTE_ACTUAL_USER" ]] || die "Failed to determine remote target user"
+[[ -n "$REMOTE_PATH" ]] || die "Failed to determine remote path"
 [[ -n "$REMOTE_DEVICE_ID" ]] || die "Failed to determine remote device ID"
+
+if [[ -z "$REMOTE_NAME" ]]; then
+  if [[ "$REMOTE_ACTUAL_USER" == "$SSH_HOST" || -z "$REMOTE_USER" ]]; then
+    REMOTE_NAME="$SSH_HOST"
+  else
+    REMOTE_NAME="$SSH_HOST-$REMOTE_ACTUAL_USER"
+  fi
+fi
+
+LOCAL_DEVICE_ID="$(local_cli show system | extract_my_id)"
+[[ -n "$LOCAL_DEVICE_ID" ]] || die "Failed to determine local device ID"
 
 echo "==> Local device ID:  $LOCAL_DEVICE_ID"
 echo "==> Remote device ID: $REMOTE_DEVICE_ID"
+echo "==> Remote user:      $REMOTE_ACTUAL_USER"
 
 mkdir -p "$LOCAL_PATH"
 
@@ -335,14 +471,31 @@ if ! local_cli config folders "$FOLDER_ID" devices list | grep -qx "$REMOTE_DEVI
 fi
 
 echo "==> Configuring remote device and folder"
-remote_bash "$FOLDER_ID" "$LABEL" "$REMOTE_PATH" "$LOCAL_DEVICE_ID" "$REMOTE_DEVICE_ID" "$REMOTE_NAME" <<'REMOTE'
+remote_bash "$REMOTE_ACTUAL_USER" "$FOLDER_ID" "$LABEL" "$REMOTE_PATH" "$LOCAL_DEVICE_ID" "$REMOTE_DEVICE_ID" <<'REMOTE_CONFIG'
 set -euo pipefail
-FOLDER_ID="$1"
-LABEL="$2"
-REMOTE_PATH="$3"
-LOCAL_DEVICE_ID="$4"
-REMOTE_DEVICE_ID="$5"
-REMOTE_NAME="$6"
+TARGET_USER="$1"
+FOLDER_ID="$2"
+LABEL="$3"
+REMOTE_PATH="$4"
+LOCAL_DEVICE_ID="$5"
+REMOTE_DEVICE_ID="$6"
+
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+[[ -n "$TARGET_HOME" ]] || {
+  echo "Remote user not found: $TARGET_USER" >&2
+  exit 1
+}
+
+TARGET_UID="$(id -u "$TARGET_USER")"
+TARGET_RUNTIME_DIR="/run/user/$TARGET_UID"
+TARGET_ST_HOME="$TARGET_HOME/.config/syncthing"
+
+run_as_target() {
+  sudo -n -u "$TARGET_USER" env \
+    HOME="$TARGET_HOME" \
+    XDG_CONFIG_HOME="$TARGET_HOME/.config" \
+    "$@"
+}
 
 json_device() {
   python3 - "$1" "$2" <<'PY'
@@ -435,12 +588,16 @@ print(os.path.abspath(os.path.expanduser(sys.argv[1])))
 PY
 }
 
-if ! syncthing cli config devices list | grep -qx "$LOCAL_DEVICE_ID"; then
-  syncthing cli config devices add-json "$(json_device "$LOCAL_DEVICE_ID" "mac-laptop")"
+remote_cli() {
+  run_as_target syncthing cli --home "$TARGET_ST_HOME" "$@"
+}
+
+if ! remote_cli config devices list | grep -qx "$LOCAL_DEVICE_ID"; then
+  remote_cli config devices add-json "$(json_device "$LOCAL_DEVICE_ID" "mac-laptop")"
 fi
 
-if syncthing cli config folders list | grep -qx "$FOLDER_ID"; then
-  existing_path="$(syncthing cli config folders "$FOLDER_ID" dump-json | extract_folder_path)"
+if remote_cli config folders list | grep -qx "$FOLDER_ID"; then
+  existing_path="$(remote_cli config folders "$FOLDER_ID" dump-json | extract_folder_path)"
   existing_path="$(expand_path "$existing_path")"
   [[ "$existing_path" == "$REMOTE_PATH" ]] || {
     echo "Remote folder $FOLDER_ID already exists at $existing_path, expected $REMOTE_PATH" >&2
@@ -453,23 +610,26 @@ if syncthing cli config folders list | grep -qx "$FOLDER_ID"; then
       "$LOCAL_DEVICE_ID"|"$REMOTE_DEVICE_ID") ;;
       *) echo "Remote folder $FOLDER_ID already contains third-party device $dev; refusing to create a mesh." >&2; exit 1 ;;
     esac
-  done < <(syncthing cli config folders "$FOLDER_ID" dump-json | extract_folder_devices)
+  done < <(remote_cli config folders "$FOLDER_ID" dump-json | extract_folder_devices)
 else
-  syncthing cli config folders add-json "$(json_folder "$FOLDER_ID" "$LABEL" "$REMOTE_PATH" "$LOCAL_DEVICE_ID" "$REMOTE_DEVICE_ID")"
+  remote_cli config folders add-json "$(json_folder "$FOLDER_ID" "$LABEL" "$REMOTE_PATH" "$LOCAL_DEVICE_ID" "$REMOTE_DEVICE_ID")"
 fi
 
-if ! syncthing cli config folders "$FOLDER_ID" devices list | grep -qx "$LOCAL_DEVICE_ID"; then
-  syncthing cli config folders "$FOLDER_ID" devices add-json "$(json_membership "$LOCAL_DEVICE_ID")"
+if ! remote_cli config folders "$FOLDER_ID" devices list | grep -qx "$LOCAL_DEVICE_ID"; then
+  remote_cli config folders "$FOLDER_ID" devices add-json "$(json_membership "$LOCAL_DEVICE_ID")"
 fi
-REMOTE
+REMOTE_CONFIG
 
 if [[ "$WRITE_STIGNORE" -eq 1 ]]; then
   echo "==> Writing safe .stignore on both endpoints"
   printf '%s' "$SAFE_STIGNORE_CONTENT" > "$LOCAL_PATH/.stignore"
-  remote_bash "$REMOTE_PATH" <<'REMOTE'
+  remote_bash "$REMOTE_ACTUAL_USER" "$REMOTE_PATH" <<'REMOTE_STIGNORE'
 set -euo pipefail
-REMOTE_PATH="$1"
-cat > "$REMOTE_PATH/.stignore" <<'EOF'
+TARGET_USER="$1"
+REMOTE_PATH="$2"
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+
+sudo -n -u "$TARGET_USER" env HOME="$TARGET_HOME" bash -lc 'cat > "$1/.stignore" <<"EOF"
 .DS_Store
 ._*
 Thumbs.db
@@ -477,12 +637,14 @@ ehthumbs.db
 *.swp
 *.swo
 *~
-EOF
-REMOTE
+EOF' _ "$REMOTE_PATH"
+REMOTE_STIGNORE
 fi
 
 echo "==> Pair created successfully"
-echo "    Mac path:    $LOCAL_PATH"
-echo "    Remote path: $REMOTE_PATH"
-echo "    Folder ID:   $FOLDER_ID"
-echo "    Remote host: $SSH_HOST"
+echo "    Mac path:      $LOCAL_PATH"
+echo "    Remote path:   $REMOTE_PATH"
+echo "    Remote user:   $REMOTE_ACTUAL_USER"
+echo "    Folder ID:     $FOLDER_ID"
+echo "    Remote device: $REMOTE_NAME"
+echo "    Remote host:   $SSH_HOST"
